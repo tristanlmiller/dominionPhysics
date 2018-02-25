@@ -71,20 +71,21 @@ class dom_sim:
     #parameter_names = [<max_cards/deck_size>,<etc.>] #Parameters used to define simulation (up to 5 allowed)
     #is_finite = <True/False>
     #version = <#> 
+    testing = False
     
     #def __init__(self,<etc.>):
     
-    #initializes the p_vector, which describes the composition of the remaining deck
+    #initializes the p_vector, which describes the composition of the remaining deck, details depending on subclass
     #def init_p_vector(self):
     
     #Draws a single card.
     #def draw(self):
     
-    #Plays a single action.  success is false if this fails
+    #Attempts to play a single action.  Returns information about success/failure
     #def action(self):
     #    return success
     
-    #Runs a simulation of a single turn.
+    #Runs a simulation of a single turn.  Returns information about the payoff.
     #def turn(self):
     #    return payoff
     
@@ -94,8 +95,19 @@ class dom_sim:
         #self.write_to_sql(mean,stdev,reliability)
         #return (mean,stdev,reliability)
     
+    #Runs a test simulation.  Prints out computing time and doesn't write to database
+    def test_sim(self):
+        self.testing = True
+        start_time = time.time()
+        results = self.sim()
+        processing_time = (time.time() - start_time)/60
+        self.testing = False
+        return (processing_time, results)
+    
     #Writes the results to the database
     def write_to_sql(self,mean,stdev,reliability):
+        if self.testing:
+            return
         con = lite.connect('sim.db')
         with con:
             cur = con.cursor()
@@ -203,7 +215,11 @@ class monte_sim(dom_sim):
         reliability = 1 - running_count/num_sims
         if running_count > 0:
             mean = running_sum / running_count
-            stdev = (running_sqsum / running_count - mean**2)**0.5
+            stdev = running_sqsum / running_count - mean**2
+            if stdev < 0:
+                stdev = 0 #necessary because sometimes rounding errors make it negative
+            else:
+                stdev = stdev ** 0.5
             self.write_to_sql(mean,stdev,reliability)
             return(mean,stdev,reliability)
         else:
@@ -376,9 +392,6 @@ class monte_herald_inf(monte_sim):
 
 #This is the abstract class of sims that use a markov chain method
 
-#To do:
-#change state_vector and payoff_vector to numpy vectors
-#write draw(), turn() and sim()
 class markov_sim(dom_sim):        
     #sim_type = "Markov <etc.>"
     #card_types = <#>
@@ -389,31 +402,251 @@ class markov_sim(dom_sim):
     #def __init__(self,<parameters>):
         #check if parameters are right types
     #    self.parameters = <etc.>
-    #    self.markov_init()
     
     #Initializes parameters for the start of turn.
     def markov_init(self):
-        self.hand_size = 0 #number of cards in hand.  Can be used e.g. to infer coppers in hand.
-        self.state_vector = [0]*max_cards #the probability of the game being in any particular state
-        #in general, state_vector will be a multi-dimensional matrix.
+        self.num_cards = 0 #number of cards in hand and play.  Used to limit simulation length.
+        self.hand_size = 0 #number of cards in hand.  Used to infer e.g. the number of coppers in hand.
+        self.state_vector = np.matrix(np.zeros((self.parameters[0],1))) #the probability of the game being in any particular state
+        self.state_vector[0] = 1
+        #In general, state_vector will be a multi-rank tensor
         #e.g. rows=[number of first action card], columns=[number of 2nd action card], layers=[action supply]
         #but I can't always follow this scheme, since it's so important to reduce the dimensionality.
         
-        self.payoff_vector = [0]*max_cards #the probability of getting any particular finite payoff
-        self.init_p_vector() #numbers characterizing the composition of the remaining deck.
+        self.init_prob()
         
-    #initializes the p_vector
-    #def init_p_vector(self):
+    #initializes the p_vector and draw_matrix and anything else related to probabilities
+    #def init_prob(self):
     
-    #This draws a single card.  By default, this assumes an infinite deck.
-    #def draw(self):
+    #Recalculates the draw matrix, and returns false if no cards are remaining.  By default it does nothing.
+    def calc_draw_matrix(self):
+        return True
     
-    #Plays a single action.  success is false if this fails
+    def draw(self):
+        if self.calc_draw_matrix():
+            self.state_vector = self.draw_matrix * self.state_vector
+            self.num_cards += 1
+            self.hand_size += 1
+    
+    #Plays a single action.  Returns the contribution to the payoff vector in case of failure
     #def action(self):
-    #    return success
+    #    return failure_payoff
     
-    #Draws 5 cards, and then plays actions until unable or reach maximum number of cards
-    #def turn(self):
+    #Draws 5 cards, and then plays actions until it reaches the maximum hand size
+    def turn(self):
+        self.markov_init()
+        payoff_vector = np.zeros((self.parameters[0]+1)) #the probability of getting any particular finite payoff
+        for i in range(5):
+            self.draw()
+
+        max_cards = self.parameters[0]
+        while(self.num_cards < max_cards):
+            failure_payoff = self.action()
+            payoff_vector += failure_payoff
+        
+        if self.is_finite:
+            p_draw_all = 1 - np.sum(payoff_vector)
+            payoff_vector[self.p_vector[0]] += p_draw_all #It's assumed that p_vector[0] is the number of copper in deck.
+            
+        return payoff_vector
     
-    #Looks at the final state vector
-    #def sim(self):
+    #Simulates a turn, and then calculates statistics from the probabilities
+    def sim(self):
+        payoff_vector = self.turn()
+        
+        reliability = 1 - np.sum(payoff_vector)
+        #print(payoff_vector[0:10])
+        if(reliability < 1):
+            mean_calc = [a*b for a,b in zip(payoff_vector,range(len(payoff_vector)))]
+            mean = np.sum(mean_calc) / (1-reliability)
+            sqmean_calc = [a*b for a,b in zip(mean_calc,range(len(mean_calc)))]
+            sqmean = np.sum(sqmean_calc) / (1-reliability)
+            stdev = sqmean - mean**2
+            
+            if stdev < 0:
+                stdev = 0 #necessary because sometimes rounding errors make it negative
+            else:
+                stdev = stdev ** 0.5
+            self.write_to_sql(mean,stdev,reliability)
+            return (mean, stdev, reliability)
+        else:
+            self.write_to_sql(0,0,reliability)
+            return (np.nan, np.nan, reliability)
+
+#Simulates a lab/copper deck of infinite size
+class markov_lab_inf(markov_sim):
+    sim_type = "Markov Lab Infinite"
+    card_types = 2
+    parameter_names = ["max_cards","fraction_labs"]
+    is_finite = False
+    version = 1
+    
+    #In this sim, state_vector represents p([0 labs in hand, 1 lab in hand, etc.])
+    
+    def __init__(self,fraction_labs,max_cards=1000):
+        if fraction_labs > 1:
+            raise ValueError("Error: expected fraction of labs less than 1")
+            return
+        self.parameters = [max_cards,fraction_labs]
+        
+    def init_prob(self):
+        #The p_vector is the fraction of copper
+        self.p_vector = [1-self.parameters[1]]
+        
+        #draw_matrix modifies the state_vector when you draw a card
+        self.draw_matrix = np.matrix(np.zeros((self.parameters[0],self.parameters[0])))
+        np.fill_diagonal(self.draw_matrix,self.p_vector[0])
+        i = np.arange(self.parameters[0]-1)
+        self.draw_matrix[i+1,i] = 1-self.p_vector[0]
+        self.draw_matrix[self.parameters[0]-1,self.parameters[0]-1] = 1
+        
+        #play_matrix modifies the state_vector when you remove a lab from hand
+        #lab_matrix modifies the state_vector by playing a lab and drawing two cards.
+        play_matrix = np.matrix(np.zeros((self.parameters[0],self.parameters[0])))
+        play_matrix[i,i+1] = 1
+        self.lab_matrix = self.draw_matrix**2 * play_matrix
+    
+    #Plays a single action.  Returns probability of failure, and payoff in case of failure
+    def action(self):
+        p_failure = self.state_vector[0,0]
+        payoff = self.hand_size
+        self.state_vector = self.lab_matrix * self.state_vector
+        self.hand_size += 1
+        self.num_cards += 2
+        
+        failure_payoff = [0]*(self.parameters[0]+1)
+        failure_payoff[payoff] = p_failure
+        return failure_payoff
+    
+#Simulates a lab/copper deck of finite size
+class markov_lab_fin(markov_lab_inf):
+    sim_type = "Markov Lab Finite"
+    parameter_names = ["deck_size","num_labs"]
+    is_finite = True
+    version = 1
+    
+    #In this sim, state_vector represents p([0 labs in hand, 1 lab in hand, etc.])
+    
+    def __init__(self,num_labs,deck_size=30,num_sims=1000):
+        if not isinstance(num_labs,int):
+            raise ValueError("Error: expected integer number of labs")
+            return
+        self.parameters = [deck_size,num_labs]
+    
+    def init_prob(self):
+        #p_vector is number of [=copper= in the starting deck
+        self.p_vector = [self.parameters[0]-self.parameters[1]]
+        
+        #play_matrix modifies the state_vector when you remove a lab from hand
+        self.play_matrix = np.matrix(np.zeros((self.parameters[0],self.parameters[0])))
+        i = np.arange(self.parameters[0]-1)
+        self.play_matrix[i,i+1] = 1
+        
+        #value of draw_matrix will be set later.
+        self.draw_matrix = np.matrix(np.zeros((self.parameters[0],self.parameters[0])))
+    
+    #calculates draw_matrix.  Returns false if deck is empty
+    def calc_draw_matrix(self):
+        cards_in_play = self.num_cards - self.hand_size #cards in play
+        cards_in_deck = self.parameters[0] - self.num_cards
+        if cards_in_deck == 0:
+            #draw pile is empty
+            return False
+        i = np.arange(self.parameters[0]-1)
+        self.draw_matrix[i,i] = (self.p_vector[0] - self.hand_size + i) / cards_in_deck
+        self.draw_matrix[i+1,i] = (self.parameters[0]-self.p_vector[0] - cards_in_play - i) / cards_in_deck
+        #print(self.draw_matrix[0,0])
+        return True
+    
+    def action(self):
+        p_failure = self.state_vector[0,0]
+        payoff = self.hand_size
+        self.state_vector = self.play_matrix * self.state_vector
+        self.hand_size -= 1
+        
+        self.draw()
+        self.draw()
+        
+        failure_payoff = [0]*(self.parameters[0]+1)
+        failure_payoff[payoff] = p_failure
+        return failure_payoff
+
+#Simulates a village/smithy/copper deck of infinite size
+class markov_vsm_inf(markov_sim):
+    sim_type = "Markov Village/Smithy Infinite"
+    card_types = 3
+    parameter_names = ["max_cards","max_actions","fraction_village","fraction_smithies"]
+    is_finite = False
+    version = 2
+    
+    #In this sim, state_vector is a rank 2 tensor.  Rows represent number of actions in hand, and columns represent the action pool
+    #It is assumed that villages are played immediately
+    #unless there are no actions available to play them in which case it doesn't really matter whether it's a village or smithy
+    
+    def __init__(self,fraction_villages,fraction_smithies,max_cards=1000,max_actions=40):
+        if fraction_villages + fraction_smithies > 1:
+            raise ValueError("Error: expected fraction of action cards less than 1")
+            return
+        self.parameters = [max_cards,max_actions,fraction_villages,fraction_smithies]
+    
+    #Initializes parameters for the start of turn.
+    def markov_init(self):
+        self.num_cards = 0 #number of cards in hand and play.  Used to limit simulation length.
+        self.hand_size = 0 #number of cards in hand.  Used to infer number of coppers in hand.
+        
+        self.state_vector = np.matrix(np.zeros((self.parameters[1],self.parameters[0])))
+        self.state_vector[1,0] = 1
+        
+        self.init_prob()
+        
+    #initializes the p_vector and draw_matrix and anything else related to probabilities
+    def init_prob(self):
+        #p_vector is [p(copper),p(village)]
+        self.p_vector = [1-self.parameters[3]-self.parameters[2],self.parameters[2]]
+        
+        #draw_matrix would be a rank 4 tensor, and too large to contain in memory.  So I do something different
+        #action_matrix modifies your action pool upon draw, assuming that you immediately play any villages (if able)
+        self.action_matrix = np.matrix(np.zeros((self.parameters[1],self.parameters[1])))
+        
+        i,j=np.indices(self.action_matrix.shape)
+        #probabilities for number of consecutive villages
+        self.action_matrix[i >= j] = (1-self.p_vector[1])*(self.p_vector[1]**(i[i >= j]-j[i >= j]))
+        #the action supply maxes out to save computing time
+        self.action_matrix[-1,:] = self.p_vector[1]**(self.parameters[1]-np.arange(self.parameters[1])-1)
+        #If there are no actions remaining, you can't immediately play villages.
+        self.action_matrix[1:,0] = 0
+        self.action_matrix[0,0] = 1
+        
+    def draw(self):
+        #First modify the action pool
+        self.state_vector = self.action_matrix * self.state_vector
+        #Next modify the number of non-coppers in hand.
+        self.state_vector[1:,1:] = self.state_vector[1:,1:]*self.p_vector[0]/(1-self.p_vector[1]) + self.state_vector[1:,:-1]*(1-self.p_vector[0]-self.p_vector[1])/(1-self.p_vector[1])
+        self.state_vector[1:,0] *= self.p_vector[0]/(1-self.p_vector[1])
+        #Need to specially handle the case where the action pool is empty, since villages cannot be played immediately
+        self.state_vector[0,1:] = self.state_vector[0,1:]*self.p_vector[0] + self.state_vector[0,:-1]*(1-self.p_vector[0])
+        self.state_vector[0,0] *= self.p_vector[0]
+        
+        self.num_cards += 1
+        self.hand_size += 1
+        
+    
+    #Plays a single smithy, and returns probability that no smithies can be played, along with the payoff probabilities.
+    def action(self):
+        failure_payoff = np.zeros((self.parameters[0]+1))
+        #If there are no smithies, then it fails
+        failure_payoff[self.hand_size] = np.sum(self.state_vector[:,0])
+        #If there are no remaining actions, then it fails
+        failure_payoff[:self.hand_size] = np.add(failure_payoff[:self.hand_size],self.state_vector[0,self.hand_size:0:-1])
+        
+        #Play a smithy, spending a card and an action
+        self.state_vector[:-1,:-1] = self.state_vector[1:,1:]
+        self.state_vector[-1,:] = 0
+        self.state_vector[:,-1] = 0
+        self.hand_size -= 1
+        
+        self.draw()
+        self.draw()
+        self.draw()
+        
+        return failure_payoff
