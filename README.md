@@ -22,7 +22,7 @@ Because of my background in physics, I recognized that the line between "Big Mon
 Most people are familiar with the phase transitions in water.  At a certain temperature, water will freeze; at another temperature, water will boil.  The freezing and boiling points also depend on pressure.  This allows us to draw a phase diagram for water.
 
 <div align="center"><img src="/Images/water phase diagram.jpg" alt="Water phase diagram" width=600><br>
-<a href="http://www.printablediagram.com/water-phase-diagrams/water-phase-diagram-chemistry/>">Image credit: akitarescueoftulsa.com</a><br></div>
+<a href="http://www.printablediagram.com/water-phase-diagrams/water-phase-diagram-chemistry/">Image credit: akitarescueoftulsa.com</a><br></div>
 &nbsp;
 
 The phase transitions of water can be thought of as sudden large-scale changes in the properties of water, arising from changes in its microscopic structure.  However, phase transitions are a more general concept that occurs even in pure mathematics.
@@ -32,7 +32,7 @@ The phase transitions of water can be thought of as sudden large-scale changes i
 Here is an example that is more relevant to *Dominion*.  Suppose that we have a network of pipes, with hubs arranged in a 2-dimension grid.  Some adjacent hubs are connected by pipe, and others are not.  If the pipes are arranged randomly, what is the probability that water will be able to flow from point A to point B, in the limit as A and B are infinitely far apart?  
 
 <div align="center"><img src="/Images/bond percolation.png" alt="Bond percolation" width=400><br>
-The black lines represent pipes.  <a href="https://en.wikipedia.org/wiki/Percolation_theory#/media/File:Bond_percolation_p_51.png>">Image credit: Wikipedia</a><br></div>
+The black lines represent pipes.  <a href="https://en.wikipedia.org/wiki/Percolation_theory#/media/File:Bond_percolation_p_51.png">Image credit: Wikipedia</a><br></div>
 &nbsp;
 
 This is known as the [bond percolation model](https://en.wikipedia.org/w/index.php?title=Percolation_theory&oldid=824236014).  There are two possible scenarios:
